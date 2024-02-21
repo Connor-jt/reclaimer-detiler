@@ -95,7 +95,7 @@ int32_t GetFormat(uint16_t tagformat) {
 
 const int sizeof_DDS_HEADER = 124; // sizeof(DirectX::DDS_HEADER);
 
-void detile_data(char* data, uint32_t data_size, uint32_t width, uint32_t height, uint8_t format, char*& DDSheader_dest)
+void detile_data(char* data, uint32_t data_size, uint32_t width, uint32_t height, uint8_t format, char tilemode, char*& DDSheader_dest)
 {
     // construct DDS header information
     size_t header_size = sizeof(uint32_t) + sizeof_DDS_HEADER + sizeof(DDS_HEADER_XBOX_p); 
@@ -113,14 +113,14 @@ void detile_data(char* data, uint32_t data_size, uint32_t width, uint32_t height
 
     // test format
     uint32_t bitm_format = GetFormat(format);
-    if (bitm_format == -1) throw exception("DXGI format specified by the tag was either unsupported or invalid");
+    if (bitm_format == -1) throw 1;
     meta.format = (DXGI_FORMAT)bitm_format;
 
     // write header
     DDSheader_dest = new char[header_size + data_size];
     size_t output_size = 0;
     HRESULT hr = EncodeDDSHeader(meta, DirectX::DDS_FLAGS_NONE, (void*)DDSheader_dest, header_size, output_size);
-    if (!SUCCEEDED(hr)) throw exception("image failed to generate DDS header");
+    if (!SUCCEEDED(hr)) 2;
 
     // write the bitmap data into our dds 
     memcpy(DDSheader_dest + header_size, data, data_size);
@@ -136,38 +136,44 @@ void detile_data(char* data, uint32_t data_size, uint32_t width, uint32_t height
     encoded_xbox_header->miscFlag = meta.miscFlags & ~4; // TEX_MISC_TEXTURECUBE; // this is just what is done in the regular encode
     encoded_xbox_header->arraySize = meta.arraySize;
     encoded_xbox_header->miscFlags2 = meta.miscFlags2;
-    encoded_xbox_header->tileMode = Xbox::c_XboxTileModeLinear; // this may not be correct
+    encoded_xbox_header->tileMode = tilemode;
     encoded_xbox_header->baseAlignment = 32768; // this is the value that the Xbox layout is saying it should be?? // can be anything other than 0??
     encoded_xbox_header->dataSize = data_size;
     encoded_xbox_header->xdkVer = 0;
 
     Xbox::XboxImage xbox_image = {};
     hr = Xbox::LoadFromDDSMemory(DDSheader_dest, header_size + data_size, nullptr, xbox_image);
-    if (!SUCCEEDED(hr)) throw exception("failed to load xbox encoded image");
+    if (!SUCCEEDED(hr)) throw 3;
 
     DirectX::ScratchImage untiled_image = {};
     hr = Xbox::Detile(xbox_image, untiled_image);
-    if (!SUCCEEDED(hr)) throw exception("failed to detile xbox image");
+    if (!SUCCEEDED(hr)) 4;
 
 
     // return data back to source array
-    if (untiled_image.GetPixelsSize() != data_size) throw exception("detiled image data did not match original data length");
 
-    memcpy(data, untiled_image.GetPixels(), untiled_image.GetPixelsSize());
+    if (untiled_image.GetPixelsSize() <= data_size) // copy over as many bytes as we got
+        memcpy(data, untiled_image.GetPixels(), untiled_image.GetPixelsSize());
+    else // else use the highest available size
+        memcpy(data, untiled_image.GetPixels(), data_size);
+
+    if (untiled_image.GetPixelsSize() != data_size) throw 5;
 }
 
+extern "C" {
+    DLL1_API int fnDll1(char* data, int32_t data_size, int16_t width, int16_t height, int16_t format, char tilemode) {
 
-DLL1_API int fnDll1(char* data, uint32_t data_size, uint32_t width, uint32_t height, uint8_t format) {
+        int result = 0;
+        char* cleanup_ptr = nullptr;
+        try { detile_data(data, data_size, width, height, format, tilemode, cleanup_ptr); }
+        catch (int ex) {
+            result = ex; 
+        }
+        catch (exception ex) {
+            result = -1;
+        }
 
-    int result = 0;
-    char* cleanup_ptr = nullptr;
-    try { detile_data(data, data_size, width, height, format, cleanup_ptr); }
-    catch (exception ex) {
-        result = -1; // failed
         if (cleanup_ptr) delete[] cleanup_ptr;
-        throw;
+        return result;
     }
-
-    if (cleanup_ptr) delete[] cleanup_ptr;
-    return result;
 }
